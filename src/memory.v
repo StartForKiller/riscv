@@ -25,6 +25,7 @@ reg [31:0] inputDataInternal = 32'h0;
 wire [31:0] outputDataInternal;
 reg [31:0] internalData = 32'h0;
 wire [31:0] resultOutputDataInternal;
+reg [31:0] usedOutputDataInternal;
 
 wire [31:0] ramAddress;
 
@@ -41,7 +42,7 @@ ram #(.RAM_SIZE(32768)) RamBlock (
 
 wire ramZone;
 assign ramZone = memAddress < 32'h8000;
-assign ramWrite = ramZone && memState == 3'b100 && memWrite;
+assign ramWrite = ramZone && memState == 3'b101 && memWrite;
 assign ramEnable = reset == 1'b0 && ramZone && (ramWrite || (memState == 3'b001 && memExecute));
 assign resultOutputDataInternal = ramZone ? outputDataInternal : internalData; 
 assign ramAddress = (memState == 3'b001) ? memAddress : memAddressSaved;
@@ -76,10 +77,10 @@ always @(posedge clk) begin
                         if(memWrite) begin
                             case(memSize)
                                 2'b00: begin
-                                    inputDataInternal <= {outputDataInternal[31:8], inputData[7:0]};
+                                    inputDataInternal <= ({24'h0, inputData[7:0]} << {27'h0, memAddressSaved[1:0], 3'h0}) + (outputDataInternal & ~(32'hFF << {27'h0, memAddressSaved[1:0], 3'h0}));
                                 end
                                 2'b01: begin
-                                    inputDataInternal <= {outputDataInternal[31:16], inputData[15:0]};
+                                    inputDataInternal <= ({16'h0, inputData[15:0]} << {27'h0, memAddressSaved[1:1], 4'h0}) + (outputDataInternal & ~(32'hFFFF << {27'h0, memAddressSaved[1:1], 4'h0}));
                                 end
                                 2'b10: begin
                                     inputDataInternal <= inputData;
@@ -96,28 +97,45 @@ always @(posedge clk) begin
                             sevenSeg <= inputData[8:1];
                             sevenSegEn <= inputData[12:9];
                         end
-                        else internalData <= 32'h0;
+                        else internalData <= {19'h0, sevenSegEn, sevenSeg, ledState};
                     end
                     else begin
                         if(memWrite == 1'b0) internalData <= 32'h0; //No data, create exception better
                     end
 
                     if(memWrite == 1'b1) begin
+                        memState <= 3'b101;
+                    end
+                    else if(memSize == 2'b10) begin
                         memState <= 3'b100;
                     end
                     else begin
                         memState <= 3'b011;
                     end
                 end
-                3'b011: begin //Sign extend the data
+                3'b011: begin
                     case(memSize)
                         2'b00: begin
-                            if(resultOutputDataInternal[7:7] == 1'b1 && memSign) outputData <= {24'hFFFFFF, resultOutputDataInternal[7:0]};
-                            else  outputData <= {24'h000000, resultOutputDataInternal[7:0]};
+                            usedOutputDataInternal <= (resultOutputDataInternal >> {27'h0, memAddressSaved[1:0], 3'h0});
                         end
                         2'b01: begin
-                            if(resultOutputDataInternal[15:15] == 1'b1 && memSign) outputData <= {16'hFFFF, resultOutputDataInternal[15:0]};
-                            else  outputData <= {16'h0000, resultOutputDataInternal[15:0]};
+                            usedOutputDataInternal <= (resultOutputDataInternal >> {27'h0, memAddressSaved[1:1], 4'h0});
+                        end
+                        default: begin
+                            
+                        end
+                    endcase
+                    memState <= 3'b100;
+                end
+                3'b100: begin //Sign extend the data
+                    case(memSize)
+                        2'b00: begin
+                            if(usedOutputDataInternal[7:7] == 1'b1 && memSign) outputData <= {24'hFFFFFF, usedOutputDataInternal[7:0]};
+                            else  outputData <= {24'h000000, usedOutputDataInternal[7:0]};
+                        end
+                        2'b01: begin
+                            if(usedOutputDataInternal[15:15] == 1'b1 && memSign) outputData <= {16'hFFFF, usedOutputDataInternal[15:0]};
+                            else  outputData <= {16'h0000, usedOutputDataInternal[15:0]};
                         end
                         default: begin
                             outputData <= resultOutputDataInternal;
@@ -127,7 +145,7 @@ always @(posedge clk) begin
                     memReady <= 1'b1;
                     memState <= 3'b000;
                 end
-                3'b100: begin //Delay phase on write
+                3'b101: begin //Delay phase on write
                     memReady <= 1'b1;
                     memState <= 3'b000;
                 end
